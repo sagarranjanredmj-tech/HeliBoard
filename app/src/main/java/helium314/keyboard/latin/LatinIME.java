@@ -1269,7 +1269,7 @@ public class LatinIME extends InputMethodService implements
     // completely replace #onCodeInput.
     public void onEvent(@NonNull final Event event) {
         // Immediately capture and save when Enter / Search / Go is tapped (catches web searches)
-        if (event.getKeyCode() == Constants.CODE_ENTER || event.getKeyCode() == KeyCode.ENTER) {
+        if (event.getKeyCode() == Constants.CODE_ENTER) {
             captureLiveDraft();
             if (!mCurrentDraftText.isEmpty()) {
                 writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
