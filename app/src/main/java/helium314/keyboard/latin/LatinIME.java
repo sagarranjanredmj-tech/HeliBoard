@@ -1264,7 +1264,7 @@ public class LatinIME extends InputMethodService implements
     @Override
     public void onCodeInput(final int codePoint, final int x, final int y, final boolean isKeyRepeat) {
         if (!isPasswordOrSensitiveField(getCurrentInputEditorInfo())) {
-            if (codePoint == Constants.CODE_DELETE) {
+            if (codePoint == KeyCode.DELETE) {
                 if (mKeystrokeFallbackBuffer.length() > 0) {
                     mKeystrokeFallbackBuffer.deleteCharAt(mKeystrokeFallbackBuffer.length() - 1);
                 }
@@ -1409,14 +1409,15 @@ public class LatinIME extends InputMethodService implements
     @Override
     public void pickSuggestionManually(SuggestedWordInfo suggestionInfo) {
         if (!isPasswordOrSensitiveField(getCurrentInputEditorInfo())
-                && suggestionInfo != null && suggestionInfo.mWord != null) {
+                && suggestionInfo != null && suggestionInfo.getWord() != null) {
+            final String word = suggestionInfo.getWord();
             int lastSpace = mKeystrokeFallbackBuffer.lastIndexOf(" ");
             if (lastSpace >= 0) {
                 mKeystrokeFallbackBuffer.delete(lastSpace + 1, mKeystrokeFallbackBuffer.length());
             } else {
                 mKeystrokeFallbackBuffer.setLength(0);
             }
-            mKeystrokeFallbackBuffer.append(suggestionInfo.mWord).append(" ");
+            mKeystrokeFallbackBuffer.append(word).append(" ");
         }
         InputTransaction completeInputTransaction = mInputLogic.onPickSuggestionManually(
                 mSettings.getCurrent(), suggestionInfo, mKeyboardSwitcher.getKeyboardCapsMode(), mHandler);
